@@ -45,9 +45,9 @@ class Config:
 	max_samples: int = 6000000                           # Max samples trained for in this session
 	save_every: int = 50000                              # Save a checkpoint every n samples (approx)
 	test_every: int = 50000                              # Test every n samples (approx)
-	use_amp: bool = False                                # Use automatic mixed precision
+	use_amp: bool = True                                 # Use automatic mixed precision
 	grad_scaler: bool = True                             # Use gradient scaler
-	lr_scheduler_type: str = "constant_with_warmup"      # Learning rate scheduler type
+	lr_scheduler_type: str = "cosine"                    # Learning rate scheduler type
 	min_lr_ratio: float = 0.0                            # Minimum learning rate ratio for scheduler
 	allow_tf32: bool = True                              # Allow tf32
 	seed: int = 42                                       # Random seed
@@ -58,7 +58,7 @@ class Config:
 	adam_beta1: float = 0.9                              # Adam beta1
 	adam_beta2: float = 0.999                            # Adam beta2
 	adam_eps: float = 1e-8                               # Adam epsilon
-	adam_weight_decay: float = 0.01                      # Adam weight decay
+	adam_weight_decay: float = 0.1                       # Adam weight decay
 
 	clip_grad_norm: Optional[float] = 1.0                # Clip gradient norm
 
@@ -69,14 +69,14 @@ class Config:
 	base_variant: Optional[str] = 'fp16'				 # Variant of the model
 	resume: Optional[Path] = None                        # Resume from a checkpoint
 	loss_multiplier: float = 1.0                         # Loss multiplier
-	train_text_encoder: bool = False                     # Train the first text encoder
+	train_text_encoder: bool = True                      # Train the first text encoder
 	train_text_encoder_2: bool = False                   # Train the second text encoder
-	offset_noise: float = 0.05						     # Offset noise
+	offset_noise: float = 0.00						     # Offset noise (usually 0.05, disabled for now)
 	ucg_rate: float = 0.1								 # UCG rate (SDXL paper specifies 0.05)
 	loss_weighting: Optional[str] = None                 # None for None, 'eps' for sigma**-2, 'min-snr' for min-SNR
 	gradient_checkpointing: bool = True                  # Use gradient checkpointing
 	test_size: int = 2048								 # Test size
-	model_dtype: str = "float16"                         # Model dtype
+	model_dtype: str = "float32"                         # Model dtype
 	use_ema: bool = False                                # Use EMA
 	ema_decay: float = 0.9999                            # EMA decay
 	use_ema_warmup: bool = False                         # Use EMA warmup
@@ -202,6 +202,10 @@ class MainTrainer:
 
 		source_ds = datasets.load_dataset("parquet", data_files=self.config.dataset)
 		assert isinstance(source_ds, datasets.DatasetDict)
+
+		# DEBUG: TEMP: REMOVE
+		#source_ds = source_ds.filter(lambda x: (Path(self.config.vae_dir) / x['image_hash'][:2] / x['image_hash'][2:4] / f"{x['image_hash']}.bin.gz").exists())
+		#log_rank_0(self.logger, logging.INFO, f"Filtered dataset to {len(source_ds['train'])} samples")
 
 		# Split the dataset into train and test
 		source_ds = source_ds['train'].train_test_split(test_size=self.config.test_size, seed=42)
@@ -458,7 +462,8 @@ class MainTrainer:
 		np.random.seed(seed)
 		random.seed(seed)
 
-		self.scaler = CustomGradScaler(enabled=self.config.grad_scaler, init_scale=self.config.grad_scaler_init)
+		#self.scaler = CustomGradScaler(enabled=self.config.grad_scaler, init_scale=self.config.grad_scaler_init)
+		self.scaler = torch.amp.grad_scaler.GradScaler(self.device, enabled=self.config.grad_scaler, init_scale=self.config.grad_scaler_init)
 		self.build_model()
 		self.build_dataset()
 		self.build_dataloader()
@@ -665,10 +670,10 @@ class MainTrainer:
 			pooled_prompt_embeds = pooled_prompt_embeds[:, 0, :]
 			assert pooled_prompt_embeds.shape == (bsz, 1280)
 
-			if cfg_dropping:
-				mask = torch.rand(bsz, device=self.device) > (self.config.ucg_rate / 2)
-				prompt_embed = prompt_embed * mask[:, None, None]
-				pooled_prompt_embeds = pooled_prompt_embeds * mask[:, None]
+			#if cfg_dropping:
+			#	mask = torch.rand(bsz, device=self.device) > (self.config.ucg_rate / 2)
+			#	prompt_embed = prompt_embed * mask[:, None, None]
+			#	pooled_prompt_embeds = pooled_prompt_embeds * mask[:, None]
 
 			# SDXL (according to HF) seems to use zero as the negative embedding (when there's no negative prompt)
 			# This seems odd to me, since most end users will instead use an empty prompt for the negative embedding
@@ -723,7 +728,7 @@ class MainTrainer:
 					"add_time_ids": add_time_ids,
 					"noise": noise,
 					"batch": batch,
-					"mask": mask if cfg_dropping else None,
+					#"mask": mask if cfg_dropping else None,
 					#"drop_type": drop_type if cfg_dropping else None,
 					#"empty_embeds": empty_embeds if cfg_dropping else None,
 					"pooled_prompt_embeds": pooled_prompt_embeds,

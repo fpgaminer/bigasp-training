@@ -6,19 +6,31 @@ Generating them during training wastes compute and memory, so we do it on the si
 import torch
 import argparse
 from pathlib import Path
-from diffusers import StableDiffusionXLPipeline, EulerAncestralDiscreteScheduler, AutoencoderKL, UNet2DConditionModel
+from diffusers import StableDiffusionXLPipeline, EulerAncestralDiscreteScheduler, AutoencoderKL, UNet2DConditionModel, DPMSolverMultistepScheduler
 from datasets import load_dataset, DatasetDict
 from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
 import numpy as np
 from tqdm import tqdm
 import torchvision.transforms.functional as TVF
+import base64
+import html
+from PIL import Image
+import io
+
+
+DEFAULT_PROMPTS = """
+A photo of a dog, high quality;
+Digital artwork of a dog, high quality;
+disney style animation drawing of a dog;
+movie poster of action superhero dog;
+"""
 
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dir", default="checkpoints", type=str, help="Directory with checkpoints")
 parser.add_argument("--steps", default=40, type=int, help="Number of steps to run the diffusion for")
 parser.add_argument("--guidance-scale", default=5.0, type=float, help="Guidance scale for the diffusion")
-parser.add_argument("--prompts", type=str, help="Prompts to use for generation")
+parser.add_argument("--prompts", default=DEFAULT_PROMPTS, type=str, help="Prompts to use for generation")
 parser.add_argument("--use-ema", action="store_true", help="Use the EMA parameters")
 parser.add_argument("--clip-model", type=str, default=None, help="If checkpoint doesn't have CLIP, use this model")
 parser.add_argument("--refresh", action="store_true", default=False, help="Re-generate all samples")
@@ -49,6 +61,7 @@ def main():
 	# Parse prompts
 	print("Parsing prompts...")
 	prompts = args.prompts.split(';')
+	prompts = [p.strip() for p in prompts if p.strip()]
 
 	np.random.seed(42)
 
@@ -63,6 +76,8 @@ def main():
 			continue
 
 		process_checkpoint(checkpoint, prompts, vae, tokenizer, tokenizer_2, args)
+	
+	create_html(checkpoints, prompts, Path(args.dir))
 
 
 @torch.no_grad()
@@ -88,6 +103,7 @@ def process_checkpoint(checkpoint: Path, prompts: list[str], vae: AutoencoderKL,
 	assert isinstance(unet, UNet2DConditionModel)
 
 	scheduler = EulerAncestralDiscreteScheduler.from_pretrained(base_model, subfolder="scheduler")
+	scheduler = DPMSolverMultistepScheduler.from_pretrained(base_model, subfolder="scheduler", use_karras_sigmas=True, algorithm_type="sde-dpmsolver++")
 
 	model = StableDiffusionXLPipeline(
 		vae=vae,
@@ -116,6 +132,96 @@ def process_checkpoint(checkpoint: Path, prompts: list[str], vae: AutoencoderKL,
 
 	for i, image in enumerate(images_pil):
 		image.save(dest_folder / f"{i}.png")
+
+
+def create_html(checkpoints: list[Path], prompts: list[str], dest: Path):
+	samples_folder = dest / Path("samples_html")
+	samples_folder.mkdir(exist_ok=True, parents=True)
+
+	with (samples_folder / "samples.html").open('w', encoding='utf-8') as f:
+		f.write("""<html>
+<head>
+	<style>
+		table {
+			border-collapse: collapse;
+			width: 100%;
+		}
+		tr {
+			border-bottom: 1px solid #ccc;
+		}
+		td, th {
+			text-align: center;
+			padding: 5px;
+		}
+		img {
+			width: 256px;
+			height: 256px;
+		}
+	</style>
+	<script>
+		function verifyAge() {
+			const dob = new Date(document.getElementById("dob").value);
+			const today = new Date();
+			let age = today.getFullYear() - dob.getFullYear();
+			const month = today.getMonth() - dob.getMonth();
+			const day = today.getDate() - dob.getDate();
+
+			if (month < 0 || (month === 0 && day < 0)) {
+				age--;
+			}
+		
+			if (age >= 18) {
+				document.getElementById("age-gate").style.display = "none";
+				document.getElementById("content").style.display = "block";
+			} else {
+				document.getElementById("age-gate").style.display = "none";
+				document.getElementById("error").style.display = "block";
+			}
+		}
+	</script>
+</head>
+<body>
+	<div id="age-gate">
+		<h1>Age Verification</h1>
+		<p>This research website contains adult content. You must be 18 years or older to view this content.</p>
+		<label for="dob">Please enter your date of birth:</label><br><br>
+		<input type="date" id="dob">
+		<button onclick="verifyAge()">Enter</button>
+	</div>
+	<div id="error" style="display: none; color: red;">
+		<p>Sorry, you must be 18 years or older to view this content.</p>
+	</div>
+	<table style="display: none;" id="content">
+		<thead>
+			<tr>
+				<th>Checkpoint</th>""")
+		for prompt in prompts:
+			escaped_prompt = html.escape(prompt)
+			f.write(f"<th>{escaped_prompt}</th>")
+		
+		f.write("</tr></thead><tbody>")
+
+		for checkpoint in tqdm(sorted(checkpoints, key=lambda x: int(x.name.split("_")[1])), desc="Building HTML"):
+			f.write("<tr>")
+			escaped_checkpoint_name = html.escape(checkpoint.name)
+			f.write(f"<td>{escaped_checkpoint_name}</td>")
+
+			for i, prompt in enumerate(prompts):
+				image_path = checkpoint / "sample_images" / f"{i}.png"
+				with open(samples_folder / f"{checkpoint.name}_{i}.png", "wb") as fi:
+					fi.write(image_path.read_bytes())
+				#image = Image.open(image_path)
+				#with io.BytesIO() as image_bytes:
+				#	image.save(image_bytes, format="WEBP", quality=85)
+				#	b64 = base64.b64encode(image_bytes.getvalue()).decode('utf-8')
+				#data = image_path.read_bytes()
+				#b64 = base64.b64encode(data).decode('utf-8')
+				#f.write(f'<td><img src="data:image/webp;base64,{b64}"></td>')
+				f.write(f'<td><img src="{checkpoint.name}_{i}.png"></td>')
+			
+			f.write("</tr>")
+	
+		f.write("</tbody></table></body></html>")
 
 
 if __name__ == "__main__":

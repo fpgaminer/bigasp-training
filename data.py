@@ -10,10 +10,20 @@ from collections import defaultdict
 from typing import NamedTuple, Optional, Iterator
 import torch.distributed as dist
 import math
+import dataclasses
+from tqdm import tqdm
+
+
+@dataclasses.dataclass
+class Bucket:
+	resolution: tuple[int, int]
+	aspect: float
+	n_chunks: int
+	images: list[int]
 
 
 
-Bucket = NamedTuple('Bucket', [('resolution', tuple[int, int]), ('aspect', float), ('images', list[int])])
+#Bucket = NamedTuple('Bucket', [('resolution', tuple[int, int]), ('aspect', float), ('images', list[int])])
 
 
 # These tags will always be included if they are present in the tag string
@@ -25,7 +35,7 @@ class ImageDatasetPrecoded(Dataset):
 	Precomputed latents
 	n_tags_mean and n_tags_std are based on measurements done on gen databases.
 	"""
-	def __init__(self, data, tokenizer: CLIPTokenizer, tokenizer_2: CLIPTokenizer, datapath: Path, n_tags_mean: float = 32, n_tags_std: float = 19.8):
+	def __init__(self, data, tokenizer: CLIPTokenizer, tokenizer_2: CLIPTokenizer, datapath: Path, n_tags_mean: float = 32, n_tags_std: float = 19.8, tag_percent: float = 0.1):
 		super().__init__()
 		self.data = data
 		self.tokenizer = tokenizer
@@ -33,6 +43,7 @@ class ImageDatasetPrecoded(Dataset):
 		self.datapath = Path(datapath)
 		self.n_tags_mean = n_tags_mean
 		self.n_tags_std = n_tags_std
+		self.tag_percent = tag_percent
 
 		# Read aliases
 		# read_tag_aliases goes from aliased tags back to a canonical tag
@@ -50,30 +61,41 @@ class ImageDatasetPrecoded(Dataset):
 	def __getitem__(self, idx: tuple[tuple[int, int], int, int]):
 		resolution, index, epoch = idx
 		row = self.data[index]
-		image_index = row['index']
+		image_hash = row['image_hash']
+		image_caption: str = row['caption']
+		image_tags: str = row['tag_string']
+		image_score: int = row['score']
+		image_n_tokens: int = row['n_tokens']
+		rng = random.Random(hash((index, epoch)))
 
-		precomputed_path = self.datapath / f"{image_index % 1000:03d}" / f"{image_index}.bin.gz"
+		precomputed_path = self.datapath / image_hash[:2] / image_hash[2:4] / f"{image_hash}.bin.gz"
 		with gzip.open(precomputed_path, "rb") as f:
-			precomputed_index, original_width, original_height, crop_x, crop_y, latent_width, latent_height = struct.unpack("<IIIIIII", f.read(28))
-			assert precomputed_index == image_index, f"Expected index {image_index}, got {precomputed_index}"
+			original_width, original_height, crop_x, crop_y, latent_width, latent_height = struct.unpack("<IIIIII", f.read(24))
 			assert latent_width == row['latent_width'] and latent_height == row['latent_height'], f"Expected latent size {row['latent_width']}x{row['latent_height']}, got {latent_width}x{latent_height}"
 			assert (latent_width, latent_height) == resolution, f"Expected resolution {resolution}, got {(latent_width, latent_height)}"
 			data = f.read()
 		
 		latent = torch.frombuffer(bytearray(data), dtype=torch.float16).view(4, latent_width, latent_height)
 
-		# Build a prompt from the tag string
-		# And tokenize
-		if 'caption' in row and row['caption'] is not None:
-			prompt = row['caption']
-		elif 'tag_string' in row and row['tag_string'] is not None:
-			prompt = self.build_prompt(row['tag_string'], row['score'])
+		# Build prompt
+		if rng.random() < self.tag_percent:
+			# We match the caption length, so the n_chunk bucketing works
+			# On average a tag costs 2.5 tokens
+			n_tags = int(image_n_tokens / 2.5)
+			prompt = self.build_prompt_from_tags(image_tags, rng, n_tags)
 		else:
-			prompt = ""
+			prompt = self.build_prompt_from_caption(image_caption, rng)
+		
+		# Add score tags
+		# Dropped 10% of the time
+		if rng.random() < 0.9:
+			prompt = self.add_score_tags(image_score, prompt, rng)
 		
 		# UCG
 		if random.random() < 0.05:
 			prompt = ""
+		
+		# Tokenize the prompt
 		tokens = self.tokenizer.encode(prompt, padding=False, truncation=False, add_special_tokens=False, verbose=False)
 		tokens_2 = self.tokenizer_2.encode(prompt, padding=False, truncation=False, add_special_tokens=False, verbose=False)
 
@@ -86,9 +108,12 @@ class ImageDatasetPrecoded(Dataset):
 			'target_size': torch.tensor([latent_width * 8, latent_height * 8], dtype=torch.long),   # goofed on height vs width; fixed by reversing here
 		}
 	
-	def build_prompt(self, tag_string: str, score: int) -> str:
+	def build_prompt_from_caption(self, caption: str, rng: random.Random) -> str:
+		return caption
+	
+	def build_prompt_from_tags(self, tag_string: str, rng: random.Random, n_tags: int) -> str:
 		# Prompt length tends to follow a normal distribution based on my measurements
-		n_tags = int(random.gauss(self.n_tags_mean, self.n_tags_std))
+		#n_tags = int(random.gauss(self.n_tags_mean, self.n_tags_std))
 		n_tags = max(5, n_tags)  # Minimum of 5 tags
 
 		# Split tag string into tags
@@ -100,20 +125,8 @@ class ImageDatasetPrecoded(Dataset):
 		assert len(tags) <= n_tags, f"Expected {n_tags} tags, got {len(tags)}"
 		random.shuffle(tags)
 
-		# Add score tag(s) to the front
-		# E.g. score_9, score_9_up, score_8_up, etc.
-		# score_N_up tags are inclusive (a score 9 image is score_9_up, score_8_up, etc.)
-		# A random number of score tags are added, to regularize the model against overfitting to specific score tags sequences.
-		# The end-user is likely to use a single tag, like score_9, or score_8_up, but we randomly include more than one
-		# to hopefully help the model learn their meaning faster.
-		score_tags = [f"score_{s}_up" for s in range(1, score+1)]
-		score_tags.append(f"score_{score}")
-		tags = random.sample(score_tags, random.randint(1, min(3, len(score_tags)))) + tags
-
 		# Prompt construction
-		tag_type = random.randint(0, 2)   # Use underscores, spaces, or mixed
-		#delim_type = random.randint(0, 1) # Use commas or mixed
-		delim_type = random.choices([0, 1], weights=[0.8, 0.2])[0] # Use commas most of the time, but sometimes mixed
+		tag_type = rng.randint(0, 2)   # Use underscores, spaces, or mixed
 
 		prompt = ""
 		for tag in tags:
@@ -130,15 +143,8 @@ class ImageDatasetPrecoded(Dataset):
 				if random.random() < 0.8:
 					tag = tag.replace("_", " ")
 			
-			# Commas should be used most of the time
-			# But sometimes use spaces in case the user forgets, or to try and train more natural language type descriptions.
-			if delim_type == 0:
-				delim = ','
-			elif delim_type == 1:
-				delim = ',' if random.random() < 0.8 else ' '
-			
 			if len(prompt) > 0:
-				prompt += delim
+				prompt += ","
 				# Space between most times
 				# NOTE: I don't think this matters because CLIP tokenizer ignores spaces?
 				if random.random() < 0.8:
@@ -148,6 +154,28 @@ class ImageDatasetPrecoded(Dataset):
 				prompt += tag
 				
 		return prompt
+	
+	def add_score_tags(self, score: int, prompt: str, rng: random.Random) -> str:
+		# Add score tag(s) to the front
+		# E.g. score_9, score_9_up, score_8_up, etc.
+		# score_N_up tags are inclusive (a score 9 image is score_9_up, score_8_up, etc.)
+		# A random number of score tags are added, to regularize the model against overfitting to specific score tags sequences.
+		# The end-user is likely to use a single tag, like score_9, or score_8_up, but we randomly include more than one
+		# to hopefully help the model learn their meaning faster.
+		score_tags = [f"score_{s}_up" for s in range(1, score+1)]
+		score_tags.append(f"score_{score}")
+		n_score_tags = random.choices([1, 2, 3], [3, 2, 1])[0]
+		tags = random.sample(score_tags, min(n_score_tags, len(score_tags)))
+
+		for tag in tags:
+			# Regularize across score tags with spaces or underscores.
+			if rng.random() < 0.2:
+				tag = tag.replace("_", " ")
+			
+			# Regularize across score tags separated by commas or spaces.
+			prompt = rng.choice([tag + ", ", tag + " ", tag + ","]) + prompt
+		
+		return prompt.strip()
 
 	def collate_fn(self, batch: list[dict]) -> dict:
 		latents = torch.stack([item['latent'] for item in batch])
@@ -238,20 +266,35 @@ def read_tag_aliases() -> dict[str, str]:
 
 
 def gen_buckets(data) -> list[Bucket]:
-	latent_widths = data['latent_width']
-	latent_heights = data['latent_height']
+	"""
+	Organizes the dataset into buckets based on the latent size and caption length (approx. number of token chunks).
+	They're bucketed by number of chunks, because a) it's slightly more efficinet, and b) it helps balance the distribution of chunk counts.
+	If they weren't bucketed by chunk, the vast majority of batches would just pad the chunks to 2 or 3, underrepresenting chunk count 1.
+	"""
+	# NOTE: It's _much_ faster to extract the columns we need like this and zip them, than to naively iterate over the dataset
+	widths = data['latent_width']
+	heights = data['latent_height']
+	n_tokens = data['n_tokens']
 
-	# Build buckets
-	buckets = {}
+	buckets: dict[tuple[int, int, int], Bucket] = {}
 
-	for i, (width, height) in enumerate(zip(latent_widths, latent_heights)):
+	for i, (width, height, n_tokens) in tqdm(enumerate(zip(widths, heights, n_tokens))):
+		# We assume ~5 tokens will be added by the score tags
+		# It's obviously random, but we don't need to be super precise here; just close enough to get the batches lining up most of the time
+		n_tokens = n_tokens + 5
+
 		aspect = width / height
 		resolution = (width, height)
 
-		if resolution not in buckets:
-			buckets[resolution] = Bucket(resolution=resolution, aspect=aspect, images=[])
+		n_chunks = (n_tokens + 74) // 75
+		n_chunks = min(max(n_chunks, 1), 3)   # Clamp to 1-3 chunks
+
+		k = (width, height, n_chunks)
+
+		if k not in buckets:
+			buckets[k] = Bucket(resolution=resolution, aspect=aspect, n_chunks=n_chunks, images=[])
 		
-		buckets[resolution].images.append(i)
+		buckets[k].images.append(i)
 	
 	return list(buckets.values())
 
@@ -331,7 +374,7 @@ class AspectBucketSampler(Sampler[list[tuple[tuple[int, int], int, int]]]):
 
 		if rng is not None:
 			# Make a copy of the buckets so we don't modify the original
-			epoch_buckets = [Bucket(bucket.resolution, bucket.aspect, bucket.images[:]) for bucket in self.buckets]
+			epoch_buckets = [Bucket(bucket.resolution, bucket.aspect, bucket.n_chunks, bucket.images[:]) for bucket in self.buckets]
 
 			# Shuffle each bucket
 			for bucket in epoch_buckets:

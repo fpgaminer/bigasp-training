@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pre-encode all the images into latents using the VAE.
-Uses both a float32 and a bfloat16 version of the VAE, to help make
+Can use both a float32 and a bfloat16 version of the VAE, to help make
 the final model more robust to end users using bfloat16.
 """
 import itertools
@@ -17,8 +17,13 @@ import torchvision.transforms.functional as TVF
 from tqdm import tqdm
 import safetensors.torch
 import struct
-import sqlite3
 import gzip
+import psycopg
+from hashlib import md5
+import PIL.Image
+
+
+PIL.Image.MAX_IMAGE_PIXELS = 933120000
 
 
 parser = argparse.ArgumentParser()
@@ -27,7 +32,6 @@ parser.add_argument("--base-revision", type=str, default="462165984030d82259a11f
 parser.add_argument("--device-batch-size", type=int, default=1)
 parser.add_argument("--num-workers", type=int, default=8)
 parser.add_argument("--output-path", type=str, default="data/vaes")
-parser.add_argument("--database", type=str, default="data/clip-embeddings.sqlite3")
 parser.add_argument("--mixed-vaes", action="store_true", help="Encode with different VAEs to improve robustness")
 
 
@@ -44,6 +48,9 @@ def main():
 	args = parser.parse_args()
 	output_path = Path(args.output_path)
 	accelerator = Accelerator()
+
+	torch.backends.cuda.matmul.allow_tf32 = True
+	torch.backends.cudnn.allow_tf32 = True
 	
 	# Load models
 	vaes = []
@@ -75,12 +82,12 @@ def main():
 		vae.eval()
 
 	# Connect to the database
-	conn = sqlite3.connect(args.database)
-	cur = conn.cursor()
+	with psycopg.connect(dbname='postgres', user='postgres', host=str(Path.cwd() / "pg-socket")) as conn:
+		cur = conn.cursor()
 
-	# Fetch a list of all paths we need to work on
-	cur.execute("SELECT id, path FROM images WHERE embedding IS NOT NULL AND score IS NOT NULL AND score > 0")
-	image_paths = [(id, path) for id,path in cur.fetchall()]
+		# Fetch a list of all paths we need to work on
+		cur.execute("SELECT path FROM images WHERE embedding IS NOT NULL AND score IS NOT NULL AND score > 0")
+		image_paths = [(md5(path.encode()).hexdigest(), Path(path)) for path, in cur.fetchall()]
 
 	# Filter out images we've already processed
 	print(f"{len(image_paths)} images to process")
@@ -108,12 +115,17 @@ def main():
 
 	# Encode
 	for batch in tqdm(dataloader, "Encoding...", disable=not accelerator.is_local_main_process, dynamic_ncols=True):
-		images = batch['images'].to(accelerator.device)
+		images = batch['images'].to(accelerator.device, non_blocking=True)
 		original_widths = batch['original_width']
 		original_heights = batch['original_height']
 		crop_xs = batch['crop_x']
 		crop_ys = batch['crop_y']
-		indexes = batch['index']
+		image_hashes = batch['image_hash']
+
+		# Normalize
+		images = images / 255.0  # 0-1
+		images = images - 0.5  # -0.5 to 0.5
+		images = images * 2.0 # -1 to 1
 
 		# Encode
 		vae, vae_dtype = random.choice(vaes)
@@ -125,38 +137,36 @@ def main():
 		assert torch.isfinite(latents).all()
 
 		# Save
-		for latent, index, original_width, original_height, crop_x, crop_y in zip(latents, indexes, original_widths, original_heights, crop_xs, crop_ys):
-			encoded_path_i = encoded_path(index.item(), output_path)
+		for latent, image_hash, original_width, original_height, crop_x, crop_y in zip(latents, image_hashes, original_widths, original_heights, crop_xs, crop_ys):
+			encoded_path_i = encoded_path(image_hash, output_path)
 			encoded_path_i.parent.mkdir(parents=True, exist_ok=True)
 			tmppath = encoded_path_i.with_suffix(".tmp")
 
 			latent_bytes = safetensors.torch._tobytes(latent, "latent")
 			assert latent.shape[0] == 4, f"Expected 4 channels, got {latent.shape[0]}"
 			assert len(latent_bytes) == latent.shape[1] * latent.shape[2] * 4 * 2, f"Expected {latent.shape[1]}x{latent.shape[2]}x4x2 bytes, got {len(latent_bytes)} bytes"
-			metadata = struct.pack("<IIIIIII", index, original_width, original_height, crop_x, crop_y, latent.shape[1], latent.shape[2])
+			metadata = struct.pack("<IIIIII", original_width, original_height, crop_x, crop_y, latent.shape[1], latent.shape[2])
 
 			with gzip.open(tmppath, "wb") as f:
-			#with open(tmppath, "wb") as f:
 				f.write(metadata)
 				f.write(latent_bytes)
 			
 			tmppath.rename(encoded_path_i)
 
 
-def encoded_path(index: int, output_path: Path):
-	dir = index % 1000
-	return output_path / f"{dir:03d}" / f"{index}.bin.gz"
+def encoded_path(image_hash: str, output_path: Path):
+	return output_path / image_hash[:2] / image_hash[2:4] / f"{image_hash}.bin.gz"
 
 
 class ImageDataset(Dataset):
-	def __init__(self, image_paths: list[tuple[int, Path]]):
+	def __init__(self, image_paths: list[tuple[str, Path]]):
 		self.image_paths = image_paths
 	
 	def __len__(self):
 		return len(self.image_paths)
 	
 	def __getitem__(self, idx):
-		index, image_path = self.image_paths[idx]
+		image_hash, image_path = self.image_paths[idx]
 		image = Image.open(image_path).convert("RGB")
 		original_size = image.size
 		ar = image.width / image.height
@@ -179,9 +189,6 @@ class ImageDataset(Dataset):
 
 		# Convert to tensor
 		image_tensor = TVF.pil_to_tensor(cropped)
-		image_tensor = image_tensor / 255.0  # 0-1
-		image_tensor = image_tensor - 0.5  # -0.5 to 0.5
-		image_tensor = image_tensor * 2.0 # -1 to 1
 
 		# N.B. The algorithm outlined in the SDXL paper indicates that crop_x and crop_y are expressed in the resized image's coordinate system.
 		# So they represent, as they do here, the number of pixels cropped from the left and top of the resized image.
@@ -191,7 +198,7 @@ class ImageDataset(Dataset):
 			'original_height': original_size[1],
 			'crop_x': crop_x,
 			'crop_y': crop_y,
-			'index': index,
+			'image_hash': image_hash,
 		}
 
 

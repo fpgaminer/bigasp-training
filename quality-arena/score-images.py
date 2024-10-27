@@ -6,12 +6,13 @@ import torch
 from tqdm import tqdm
 import PIL.Image
 import torch.utils.data
-import sqlite3
 import argparse
 from models import ScoreClassifier
 from typing import Iterable, Iterator, TypeVar
 import itertools
 from pathlib import Path
+import psycopg
+import random
 
 
 PIL.Image.MAX_IMAGE_PIXELS = 933120000
@@ -19,7 +20,6 @@ PIL.Image.MAX_IMAGE_PIXELS = 933120000
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch-size", type=int, default=128)
-parser.add_argument("--database", type=str, default="../data/clip-embeddings.sqlite3")
 
 
 @torch.no_grad()
@@ -34,19 +34,21 @@ def main():
 	model = model.to("cuda")
 
 	# Connect to the database
-	conn = sqlite3.connect(args.database)
+	conn = psycopg.connect(dbname='postgres', user='postgres', host=str(Path.cwd().parent / "pg-socket"))
 	cur = conn.cursor()
 
 	# Fetch a list of all paths we need to work with
 	cur.execute("SELECT path FROM images WHERE embedding IS NOT NULL AND score IS NULL")
 	paths = [path for path, in cur.fetchall()]
+	random.shuffle(paths)
 
 	print(f"Found {len(paths)} paths to process")
 
 	pbar = tqdm(total=len(paths), desc="Scoring images...", dynamic_ncols=True)
 	for batch in batcher(paths, args.batch_size):
 		# Fetch embeddings
-		cur.execute("SELECT path, embedding FROM images WHERE path IN ({})".format(",".join("?" for _ in batch)), batch)
+		#cur.execute("SELECT path, embedding FROM images WHERE path IN ({})".format(",".join("%s" for _ in batch)), batch)
+		cur.execute("SELECT path, embedding FROM images WHERE path = ANY(%s)", (batch,))
 		paths, embeddings = zip(*cur.fetchall())
 		embeddings = [torch.frombuffer(e, dtype=torch.float16) for e in embeddings]
 		embeddings = torch.stack(embeddings).to(torch.float32).to("cuda")
@@ -59,7 +61,7 @@ def main():
 
 		# Insert scores into the database
 		for path, score in zip(paths, scores):
-			cur.execute("UPDATE images SET score = ? WHERE path = ?", (int(score), path))
+			cur.execute("UPDATE images SET score = %s WHERE path = %s", (int(score), path))
 		
 		conn.commit()
 		pbar.update(len(paths))
