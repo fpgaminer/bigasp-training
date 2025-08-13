@@ -1,0 +1,650 @@
+:root {
+  --primary-color: #4f46e5;
+  --primary-hover: #4338ca;
+  --secondary-color: #10b981;
+  --secondary-hover: #059669;
+  --background-color: #f9fafb;
+  --card-color: #ffffff;
+  --text-color: #1f2937;
+  --text-light: #6b7280;
+  --border-color: #e5e7eb;
+  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  
+  /* Heights for layout */
+  --header-height: 60px;
+  --controls-height: 50px;
+  --shortcuts-height: 24px;
+  --ai-panel-compact-height: 120px;
+  --spacing: 16px;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
+  background-color: var(--background-color);
+  color: var(--text-color);
+  line-height: 1.5;
+}
+
+.app-container {
+  height: 100vh;
+  max-width: 2000px;
+  margin: 0 auto;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Header Styles */
+.app-header {
+  display: flex;
+  align-items: center;
+  padding: 0 0.5rem;
+  height: var(--header-height);
+  margin-bottom: 0.5rem;
+}
+
+.app-header h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--primary-color);
+  margin: 0;
+  margin-right: 1.5rem;
+  white-space: nowrap;
+}
+
+.stats-container {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex: 1;
+  padding: 0.25rem 0.75rem;
+  background-color: var(--card-color);
+  border-radius: 0.5rem;
+  box-shadow: var(--shadow-sm);
+}
+
+.stats-metrics {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.stats-metrics p {
+  font-weight: 500;
+  color: var(--text-light);
+  font-size: 0.875rem;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  cursor: help;
+}
+
+.stats-metrics p::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background-color: var(--primary-color);
+  border-radius: 50%;
+  margin-right: 6px;
+}
+
+.stats-container p {
+  font-weight: 500;
+  color: var(--text-light);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.toggle-container {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: nowrap;
+}
+
+/* Toggle Switch */
+.grid-mode-toggle,
+.openai-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: #ccc;
+  transition: .3s;
+  border-radius: 30px;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: .3s;
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: var(--primary-color);
+}
+
+input:focus + .slider {
+  box-shadow: 0 0 1px var(--primary-color);
+}
+
+input:checked + .slider:before {
+  transform: translateX(22px);
+}
+
+.toggle-label {
+  font-weight: 500;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+/* Main content container - fills available space between header and footer */
+.main-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0; /* Required for proper flexbox behavior in Firefox */
+  overflow: hidden;
+}
+
+/* AI Score Panel Styles */
+.ai-score-panel {
+  display: flex;
+  gap: 1rem;
+  background-color: var(--card-color);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow: var(--shadow-md);
+  margin-bottom: 0.5rem;
+  height: var(--ai-panel-compact-height);
+  overflow-y: auto;
+}
+
+.ai-score-panel h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.openai-preferred-inline {
+  font-weight: 500;
+  font-size: 0.8rem;
+  color: var(--text-light);
+}
+
+.pulse-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background-color: var(--primary-color);
+  border-radius: 50%;
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(.95);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(.95);
+    opacity: 0.7;
+  }
+}
+
+.score-section {
+  flex: 1;
+}
+
+.score-bar-container {
+  height: 8px;
+  background-color: #e5e7eb;
+  border-radius: 4px;
+  margin-bottom: 0.25rem;
+  overflow: hidden;
+}
+
+.score-bar {
+  height: 100%;
+  background-color: var(--primary-color);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.score-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--text-light);
+}
+
+.score-value {
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.openai-section {
+  flex: 2;
+  display: flex;
+  flex-direction: column;
+}
+
+.openai-preferred {
+  background-color: var(--secondary-color);
+  color: white;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.25rem;
+  margin-bottom: 0.5rem;
+  display: inline-block;
+  font-size: 0.75rem;
+}
+
+.openai-reasoning {
+  background-color: #f9fafb;
+  border-radius: 0.25rem;
+  padding: 0.5rem;
+  border-left: 3px solid var(--secondary-color);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.no-data {
+  color: var(--text-light);
+  font-style: italic;
+  font-size: 0.8rem;
+}
+
+/* Image Comparison Styles */
+.image-comparison-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0; /* Required for Firefox */
+  overflow: hidden;
+}
+
+.keyboard-shortcuts-info {
+  text-align: center;
+  color: var(--text-light);
+  font-size: 0.75rem;
+  height: var(--shortcuts-height);
+  margin-bottom: 0.25rem;
+}
+
+.image-comparison {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  width: 100%;
+  flex: 1;
+  min-height: 0; /* Required for Firefox */
+}
+
+.image-card {
+  flex: 1;
+  position: relative;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.2s, box-shadow 0.2s;
+  cursor: pointer;
+  max-width: 48%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-card:hover, .image-card.hovered {
+  transform: scale(1.01);
+  box-shadow: var(--shadow-lg);
+}
+
+.image-card img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* Replace the image-overlay with winner-selector button */
+.winner-selector {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: transparent;
+  border: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.3s;
+  cursor: pointer;
+  /* Set z-index to ensure it's above the image but doesn't cover the entire card */
+  z-index: 5;
+  pointer-events: none;;
+}
+
+.image-card:hover .winner-selector {
+  opacity: 1;
+}
+
+.winner-selector span {
+  background-color: var(--primary-color);
+  color: white;
+  padding: 0.5rem 1rem;
+  border-radius: 0.375rem;
+  font-weight: 600;
+  font-size: 0.875rem;
+  /* This ensures only the button text/span blocks right-clicks, not the entire overlay */
+  pointer-events: auto;
+}
+
+.comparison-controls {
+  display: flex;
+  justify-content: center;
+  padding: 0.5rem 0;
+  height: var(--controls-height);
+}
+
+.tie-button {
+  background-color: #6b7280;
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  padding: 0.5rem 1.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.tie-button:hover {
+  background-color: #4b5563;
+}
+
+/* Keyboard shortcut styles */
+kbd {
+  display: inline-block;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+  line-height: 1;
+  color: var(--text-color);
+  background-color: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.25rem;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
+  margin: 0 0.2rem;
+}
+
+.keyboard-active {
+  animation: flash 0.3s;
+}
+
+@keyframes flash {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); box-shadow: var(--shadow-lg); }
+  100% { transform: scale(1); }
+}
+
+.tie-button.keyboard-active {
+  background-color: var(--primary-color);
+}
+
+/* Keyboard shortcuts guide styles */
+.keyboard-shortcuts-guide {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.guide-content {
+  background-color: var(--card-color);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-lg);
+  width: 90%;
+  max-width: 500px;
+  text-align: center;
+}
+
+.guide-content h3 {
+  color: var(--primary-color);
+  font-size: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.shortcut-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.shortcut-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  background-color: #f9fafb;
+  border-radius: 0.5rem;
+}
+
+.shortcut-item kbd {
+  font-size: 1rem;
+  padding: 0.3rem 0.75rem;
+  background-color: var(--primary-color);
+  color: white;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, 0.2);
+}
+
+.close-guide-button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 0.375rem;
+  padding: 0.5rem 2rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.close-guide-button:hover {
+  background-color: var(--primary-hover);
+}
+
+/* Audio button styles */
+.openai-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.openai-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.audio-button, .fetch-button {
+  background-color: var(--secondary-color);
+  color: white;
+  border: none;
+  border-radius: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.audio-button:hover, .fetch-button:hover {
+  background-color: var(--secondary-hover);
+}
+
+.audio-button.playing {
+  background-color: #6b7280;
+}
+
+.audio-button:disabled, .fetch-button:disabled {
+  background-color: #d1d5db;
+  cursor: not-allowed;
+}
+
+.fetch-button {
+  background-color: var(--primary-color);
+}
+
+.fetch-button:hover {
+  background-color: var(--primary-hover);
+}
+
+/* Loading Indicators */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+
+.loading-spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 4px solid var(--primary-color);
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.image-loading-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+}
+
+.image-loading-indicator .spinner {
+  border: 3px solid rgba(0, 0, 0, 0.1);
+  border-radius: 50%;
+  border-top: 3px solid var(--primary-color);
+  width: 30px;
+  height: 30px;
+  animation: spin 1s linear infinite;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .image-comparison {
+    flex-direction: column;
+    align-items: center;
+  }
+  
+  .image-card {
+    max-width: 100%;
+    height: 45%;
+  }
+  
+  .ai-score-panel {
+    flex-direction: column;
+    height: auto;
+  }
+  
+  .stats-container {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .app-header {
+    flex-direction: column;
+    height: auto;
+    margin-bottom: 1rem;
+  }
+  
+  .app-header h1 {
+    margin-bottom: 0.5rem;
+  }
+}
